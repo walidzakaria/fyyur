@@ -1,0 +1,34 @@
+{% extends 'layouts/main.html' %}
+{% block title %}Fyyur | Venues{% endblock %}
+{% block content %}
+{% for area in areas %}
+<h3>{{ area.city }}, {{ area.state }}</h3>
+	<ul class="items">
+		{% for venue in area.venues %}
+		<li>
+			<table width="80%">
+				<th width="80%"></th>
+				<th width="15%"></th>
+				<tr>
+					<td>
+						<a href="/venues/{{ venue.id }}">
+							<i class="fas fa-music"></i>
+							<div class="item">
+								<h5>{{ venue.name }}</h5>
+							</div>
+						</a>
+					</td>
+					<td>
+						<button class="delete-button" data-id="{{ venue.id }}">&cross;</button>
+					</td>
+				</tr>
+			</table>
+
+
+		</li>
+		{% endfor %}
+	</ul>
+{% endfor %}
+
+<script src="/static/js/venues.js"></script>
+{% endblock %}
