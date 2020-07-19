@@ -1,247 +1,19 @@
 # Imports
 # ----------------------------------------------------------------------------#
 
-import json
+import logging
 import os
 import sys
-
-import dateutil.parser
-import babel
-from flask import Flask, render_template, request, Response, flash, redirect, url_for, jsonify, abort
-from flask_migrate import Migrate
-from flask_moment import Moment
-from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import or_
-from sqlalchemy import ARRAY, String
-from sqlalchemy.ext.hybrid import hybrid_property, hybrid_method
-import logging
 from logging import Formatter, FileHandler
-from flask_wtf import Form
+
+import babel
+import dateutil.parser
+from flask import render_template, request, flash, redirect, url_for, jsonify, abort
+from sqlalchemy import or_
+
 from forms import *
+from models import State, City, Artist, Venue, Show, app, db
 
-# ----------------------------------------------------------------------------#
-# App Config.
-# ----------------------------------------------------------------------------#
-
-
-# TODO: connect to a local postgresql database
-app = Flask(__name__)
-moment = Moment(app)
-app.config.from_object('config')
-db = SQLAlchemy(app)
-migrate = Migrate(app, db)
-
-
-# ----------------------------------------------------------------------------#
-# Models.
-# ----------------------------------------------------------------------------#
-
-class State(db.Model):
-    __tablename__ = 'State'
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(120), nullable=False)
-
-    def __repr__(self):
-        return f'id: {self.id}, name: {self.name}'
-
-
-class City(db.Model):
-    __tablename__ = 'City'
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(120), nullable=False)
-    state_id = db.Column(db.Integer, db.ForeignKey('State.id'), nullable=False)
-
-    def __repr__(self):
-        return f'id: {self.id}, name: {self.name}'
-
-    def get_state(self):
-        state = State.query.get(self.state_id)
-        return state
-
-    def get_venues(self):
-        city_venues = Venue.query.filter_by(city=self.id).all()
-
-        return {
-            "city": self.name,
-            "state": self.get_state().name,
-            "venues": [
-                venue.serialize() for venue in city_venues
-            ]
-        }
-
-    def __repr__(self):
-        state = State.query.get(self.state_id)
-        if not state:
-            result = f'id: {self.id}, name: {self.name}, state: None'
-        else:
-            result = f'id: {self.id}, name: {self.name}, state: {state.name}'
-        return result
-
-
-class Show(db.Model):
-    __tablename__ = 'Show'
-
-    id = db.Column(db.Integer, primary_key=True)
-    start_time = db.Column(db.DateTime(), nullable=False)
-    venue_id = db.Column(db.Integer, db.ForeignKey('Venue.id'))
-    artist_id = db.Column(db.Integer, db.ForeignKey('Artist.id'))
-    venue = db.relationship('Venue', backref='venue_shows', lazy=True)
-    artist = db.relationship('Artist', backref='artist_shows', lazy=True)
-
-    def __repr__(self):
-        return f'id: {self.id}, venue: {self.venue.name}, artist: {self.artist.name}, on: {self.start_time}'
-
-    def valid_time(self):
-        artist = Artist.query.get(self.artist_id)
-        time_hour = int(self.start_time.split(' ')[1][:2])
-        return artist.available_from <= time_hour <= artist.available_till
-
-    def serialize(self):
-        return {
-            "artist_id": self.artist.id,
-            "artist_name": self.artist.name,
-            "artist_image_link": self.artist.image_link,
-            "start_time": self.start_time
-        }
-
-    def serialize_details(self):
-        return {
-            "venue_id": self.venue_id,
-            "venue_name": self.venue.name,
-            "artist_id": self.artist_id,
-            "artist_name": self.artist.name,
-            "artist_image_link": self.artist.image_link,
-            "start_time": self.start_time
-        }
-
-
-class Venue(db.Model):
-    __tablename__ = 'Venue'
-
-    id = db.Column(db.Integer(), primary_key=True)
-    name = db.Column(db.String(), nullable=False)
-    genres = db.Column(db.String(), nullable=False, default='')
-    city = db.Column(db.Integer, db.ForeignKey('City.id'), nullable=False)
-    address = db.Column(db.String(120), nullable=False, default='')
-    phone = db.Column(db.String(120), nullable=False, default='')
-    website = db.Column(db.String(255), nullable=False, default='')
-    facebook_link = db.Column(db.String(120), nullable=False, default='')
-    seeking_talent = db.Column(db.Boolean(), nullable=False, default=False)
-    seeking_description = db.Column(db.String(), nullable=True, default='')
-    image_link = db.Column(db.String(500), nullable=False, default='')
-
-    # TODO: implement any missing fields, as a database migration using Flask-Migrate
-    def num_upcoming_shows(self):
-        result = Show.query.filter(Show.venue_id == self.id).filter(Show.start_time >= datetime.now()).count()
-        return result
-
-    def __repr__(self):
-        return f'id: {self.id}, name: {self.name}'
-
-    def serialize(self):
-        return {
-            "id": self.id,
-            "name": self.name,
-            "num_upcoming_shows": self.num_upcoming_shows(),
-        }
-
-    def serialize_details(self):
-        city = City.query.get(self.city)
-        past_shows = Show.query.filter(Show.start_time < datetime.now(),
-                                       Show.venue_id == self.id).all()
-        upcoming_shows = Show.query.filter(Show.start_time >= datetime.now(),
-                                           Show.venue_id == self.id).all()
-        past_shows_count = Show.query.filter(Show.start_time < datetime.now(),
-                                             Show.venue_id == self.id).count()
-        upcoming_shows_count = Show.query.filter(Show.start_time >= datetime.now(),
-                                                 Show.venue_id == self.id).count()
-
-        return {
-            "id": self.id,
-            "name": self.name,
-            "genres": self.genres,
-            "address": self.address,
-            "city": city.name,
-            "state": city.get_state().name,
-            "phone": self.phone,
-            "website": self.website,
-            "facebook_link": self.facebook_link,
-            "seeking_talent": self.seeking_talent,
-            "seeking_description": self.seeking_description,
-            "image_link": self.image_link,
-            "past_shows": [
-                show.serialize() for show in past_shows
-            ],
-            "upcoming_shows": [
-                show.serialize() for show in upcoming_shows
-            ],
-            "past_shows_count": past_shows_count,
-            "upcoming_shows_count": upcoming_shows_count,
-        }
-
-
-class Artist(db.Model):
-    __tablename__ = 'Artist'
-
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String, nullable=False)
-    city = db.Column(db.Integer, db.ForeignKey('City.id'), nullable=False)
-    phone = db.Column(db.String(120), nullable=False, default='')
-    website = db.Column(db.String(255), nullable=False, default='')
-    seeking_venue = db.Column(db.Boolean(), nullable=False, default=False)
-    seeking_description = db.Column(db.String(), nullable=True, default='')
-    genres = db.Column(db.String(), nullable=False, default='')
-    image_link = db.Column(db.String(500), nullable=False, default='')
-    facebook_link = db.Column(db.String(120), nullable=False, default='')
-    available_from = db.Column(db.Integer(), nullable=True, default=0)
-    available_till = db.Column(db.Integer(), nullable=True, default=23)
-
-    # TODO: implement any missing fields, as a database migration using Flask-Migrate
-    def __repr__(self):
-        return f'id: {self.id}, name: {self.name}'
-
-    def serialize(self):
-        return {
-            "id": self.id,
-            "name": self.name,
-        }
-
-    def serialize_details(self):
-        city = City.query.get(self.city)
-        past_shows = Show.query.filter(Show.start_time < datetime.now(),
-                                       Show.artist_id == self.id).all()
-        upcoming_shows = Show.query.filter(Show.start_time >= datetime.now(),
-                                           Show.artist_id == self.id).all()
-        past_shows_count = Show.query.filter(Show.start_time < datetime.now(),
-                                             Show.artist_id == self.id).count()
-        upcoming_shows_count = Show.query.filter(Show.start_time >= datetime.now(),
-                                                 Show.artist_id == self.id).count()
-        return {
-            "id": self.id,
-            "name": self.name,
-            "genres": self.genres,
-            "city": city.name,
-            "state": city.get_state().name,
-            "phone": self.phone,
-            "website": self.website,
-            "facebook_link": self.facebook_link,
-            "seeking_venue": self.seeking_venue,
-            "seeking_description": self.seeking_description,
-            "image_link": self.image_link,
-            "available_from": self.available_from,
-            "available_till": self.available_till,
-            "past_shows": [
-                show.serialize() for show in past_shows
-            ],
-            "upcoming_shows": [
-                show.serialize() for show in upcoming_shows
-            ],
-            "past_shows_count": past_shows_count,
-            "upcoming_shows_count": upcoming_shows_count,
-        }
-
-
-# TODO Implement Show and Artist models, and complete all model relationships and properties, as a database migration.
 
 # ----------------------------------------------------------------------------#
 # Filters.
@@ -268,9 +40,7 @@ def validate_city(city_name, state_name):
         state = State.query.filter_by(name=state_name).first()
         if not state:
             state = State(name=state_name)
-            db.session.add(state)
-            db.session.commit()
-        city = City(name=city_name, state_id=state.id)
+        city = City(name=city_name, state=state)
         db.session.add(city)
         db.session.commit()
     return city
@@ -353,19 +123,19 @@ def create_venue_submission():
     try:
         # get city id if exists, or create it if it doesn't exist
         city = validate_city(request.form['city'], request.form['state'])
-
         # create new venue
+
         new_venue = Venue(
             name=request.form['name'],
             genres=request.form.getlist('genres'),
-            city=city.id,
+            city_id=city.id,
             address=request.form['address'],
             phone=request.form['phone'],
-            website='',
+            image_link=request.form['image_link'],
             facebook_link=request.form['facebook_link'],
-            seeking_talent=False,
-            seeking_description='',
-            image_link=''
+            # convert 'yes/no' form input to boolean True/False
+            seeking_talent=request.form['seeking_talent'] == 'Yes',
+            seeking_description=request.form['seeking_description']
         )
 
         db.session.add(new_venue)
@@ -383,7 +153,7 @@ def create_venue_submission():
         # see: http://flask.pocoo.org/docs/1.0/patterns/flashing/
     finally:
         db.session.close()
-    return render_template('pages/home.html')
+    return redirect(url_for('index'))
 
 
 @app.route('/venues/<venue_id>', methods=['DELETE', 'GET'])
@@ -466,16 +236,18 @@ def edit_artist(artist_id):
 
     # TODO: populate form with fields from artist with ID <artist_id>
     artist = Artist.query.get(artist_id)
+    city = City.query.get(artist.city_id)
     form.name.data = artist.name
     form.genres.data = artist.genres
     form.phone.data = artist.phone
-    city = City.query.get(artist.city)
     form.city.data = city.name
-    form.state.data = city.get_state()
+    form.state.data = city.state.name
     form.image_link.data = artist.image_link
     form.facebook_link.data = artist.facebook_link
     form.available_from.data = artist.available_from
     form.available_till.data = artist.available_till
+    form.seeking_venue.data = artist.seeking_venue
+    form.seeking_description.data = artist.seeking_description
 
     return render_template('forms/edit_artist.html', form=form, artist=artist)
 
@@ -485,15 +257,20 @@ def edit_artist_submission(artist_id):
     # TODO: take values from the form submitted, and update existing
     # artist record with ID <artist_id> using the new attributes
     artist = Artist.query.get(artist_id)
-
     artist.name = request.form['name']
     city = validate_city(request.form['city'], request.form['state'])
-    artist.city = city.id
+    artist.city_id = city.id
     artist.phone = request.form['phone']
     artist.genres = request.form.getlist('genres')
     artist.facebook_link = request.form['facebook_link']
     artist.available_from = request.form['available_from']
+    artist.website = request.form['website']
+    artist.image_link = request.form['image_link']
     artist.available_till = request.form['available_till']
+
+    # convert 'yes/no' form input to boolean True/False
+    artist.seeking_venue = request.form['seeking_venue'] == 'Yes'
+    artist.seeking_description = request.form['seeking_description']
 
     db.session.commit()
 
@@ -505,15 +282,17 @@ def edit_venue(venue_id):
     form = VenueForm()
     # TODO: populate form with values from venue with ID <venue_id>
     venue = Venue.query.get(venue_id)
+    city = City.query.get(venue.city_id)
     form.name.data = venue.name
     form.genres.data = venue.genres
     form.phone.data = venue.phone
-    city = City.query.get(venue.city)
     form.city.data = city.name
-    form.state.data = city.get_state()
+    form.state.data = city.state.name
     form.image_link.data = venue.image_link
     form.facebook_link.data = venue.facebook_link
     form.address.data = venue.address
+    form.seeking_talent.data = venue.seeking_talent
+    form.seeking_description.data = venue.seeking_description
 
     return render_template('forms/edit_venue.html', form=form, venue=venue)
 
@@ -525,10 +304,15 @@ def edit_venue_submission(venue_id):
     venue = Venue.query.get(venue_id)
     venue.name = request.form['name']
     city = validate_city(request.form['city'], request.form['state'])
-    venue.city = city.id
+    venue.city_id = city.id
     venue.phone = request.form['phone']
     venue.genres = request.form.getlist('genres')
     venue.facebook_link = request.form['facebook_link']
+    venue.image_link = request.form['image_link']
+
+    # convert 'yes/no' form input to boolean True/False
+    venue.seeking_talent = request.form['seeking_talent'] == 'Yes'
+    venue.seeking_description = request.form['seeking_description']
 
     db.session.commit()
 
@@ -555,12 +339,17 @@ def create_artist_submission():
         # create new artist
         new_artist = Artist(
             name=request.form['name'],
-            city=city.id,
+            city_id=city.id,
             phone=request.form['phone'],
             genres=request.form.getlist('genres'),
+            website=request.form['website'],
+            image_link=request.form['image_link'],
             facebook_link=request.form['facebook_link'],
             available_from=request.form['available_from'],
-            available_till=request.form['available_till']
+            available_till=request.form['available_till'],
+            # convert 'yes/no' form input to boolean True/False
+            seeking_venue=request.form['seeking_venue'] == 'Yes',
+            seeking_description=request.form['seeking_description']
         )
         db.session.add(new_artist)
         db.session.commit()
